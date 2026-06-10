@@ -365,10 +365,10 @@ Project discovery also reads legacy `.agents/**/*.md` files. Nested subdirectori
 
 Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. They do not pin a provider model; they inherit your current Pi default model unless you set `subagents.agentOverrides.<name>.model`. `oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `worker` is the implementation agent for normal tasks and approved oracle handoffs.
 
-The `researcher` builtin uses `web_search`, `fetch_content`, and `get_search_content`; those require [pi-web-access](https://github.com/nicobailon/pi-web-access):
+The `researcher` and `context-builder` builtins use Pi research capability tools: `WebSearch` for discovery, `WebFetch` for known URLs, `CodeContextSearch` for API/examples, and `SiteMap` for documentation URL discovery. Install a package that provides those tools, such as the StartupBros `pi-research-fabric` package used by this setup:
 
 ```bash
-pi install npm:pi-web-access
+pi install git:github.com/StartupBros/pi-research-fabric
 ```
 
 ### Builtin overrides

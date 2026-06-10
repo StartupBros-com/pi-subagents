@@ -62,6 +62,10 @@ const READ_ONLY_BUILTIN_TOOLS = new Set([
 	"web_search",
 	"fetch_content",
 	"get_search_content",
+	"WebSearch",
+	"WebFetch",
+	"CodeContextSearch",
+	"SiteMap",
 	"intercom",
 	"contact_supervisor",
 ]);

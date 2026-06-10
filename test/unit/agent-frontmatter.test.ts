@@ -347,6 +347,38 @@ Do work
 		}
 	});
 
+	it("research builtins use the Pi research capability tool surface", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-builtin-research-tools-"));
+		const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-builtin-research-tools-home-"));
+		tempDirs.push(dir);
+		tempDirs.push(homeDir);
+		const previousHome = process.env.HOME;
+		const previousUserProfile = process.env.USERPROFILE;
+
+		try {
+			process.env.HOME = homeDir;
+			process.env.USERPROFILE = homeDir;
+			const agents = discoverAgentsAll(dir).builtin;
+			const researcher = agents.find((candidate) => candidate.name === "researcher");
+			const contextBuilder = agents.find((candidate) => candidate.name === "context-builder");
+
+			assert.ok(researcher, "researcher builtin should be discovered");
+			assert.ok(contextBuilder, "context-builder builtin should be discovered");
+			for (const agent of [researcher, contextBuilder]) {
+				assert.ok(agent?.tools?.includes("WebSearch"), `${agent?.name} should include WebSearch`);
+				assert.ok(agent?.tools?.includes("WebFetch"), `${agent?.name} should include WebFetch`);
+				assert.ok(agent?.tools?.includes("CodeContextSearch"), `${agent?.name} should include CodeContextSearch`);
+				assert.ok(agent?.tools?.includes("SiteMap"), `${agent?.name} should include SiteMap`);
+				assert.ok(!agent?.tools?.includes("web_search"), `${agent?.name} should not depend on pi-web-access web_search`);
+			}
+		} finally {
+			if (previousHome === undefined) delete process.env.HOME;
+			else process.env.HOME = previousHome;
+			if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+			else process.env.USERPROFILE = previousUserProfile;
+		}
+	});
+
 	it("worker and delegate include the child-facing supervisor tool", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-builtin-supervisor-tool-"));
 		const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-builtin-supervisor-tool-home-"));
