@@ -205,6 +205,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				statusActivityText ? `Activity: ${statusActivityText}` : undefined,
 				`Mode: ${status.mode}`,
 				`Progress: ${progressLabel}`,
+				status.pendingAppends ? `Pending appends: ${status.pendingAppends}` : undefined,
 				`Started: ${started}`,
 				`Updated: ${updated}`,
 				`Dir: ${asyncDir}`,
@@ -217,7 +218,10 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				const modelThinking = formatModelThinking(step.model, step.thinking);
 				const modelText = modelThinking ? ` (${modelThinking})` : "";
 				const errorText = step.error ? `, error: ${step.error}` : "";
-				lines.push(`${stepLineLabel(status, index)}: ${step.agent} ${step.status}${modelText}${stepActivityText ? `, ${stepActivityText}` : ""}${errorText}`);
+				const acceptanceText = step.acceptance?.status ? `, acceptance: ${step.acceptance.status}` : "";
+				const display = step.label ? `${step.label} (${step.agent})` : step.agent;
+				const phase = step.phase ? `[${step.phase}] ` : "";
+				lines.push(`${stepLineLabel(status, index)}: ${phase}${display} ${step.status}${modelText}${stepActivityText ? `, ${stepActivityText}` : ""}${acceptanceText}${errorText}`);
 				lines.push(...formatNestedRunStatusLines(step.children, { indent: "  ", commandHints: true, maxLines: 20 }));
 				const stepOutputPath = path.join(asyncDir, `output-${index}.log`);
 				if (stepOutputPath !== outputPath && fs.existsSync(stepOutputPath)) lines.push(`  Output: ${stepOutputPath}`);

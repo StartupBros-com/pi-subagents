@@ -17,13 +17,16 @@ import {
 	parsePackageName,
 } from "./agents.ts";
 import { serializeAgent } from "./agent-serializer.ts";
-import { serializeChain } from "./chain-serializer.ts";
+import { serializeChain, serializeJsonChain } from "./chain-serializer.ts";
 import { discoverAvailableSkills } from "./skills.ts";
-import type { Details } from "../shared/types.ts";
+import {
+	buildProactiveSkillSubagentRecommendationLines,
+} from "./proactive-skills.ts";
+import type { Details, ExtensionConfig } from "../shared/types.ts";
 
 type ManagementAction = "list" | "get" | "create" | "update" | "delete";
 type ManagementScope = "user" | "project";
-type ManagementContext = Pick<ExtensionContext, "cwd" | "modelRegistry">;
+type ManagementContext = Pick<ExtensionContext, "cwd" | "modelRegistry"> & { config?: ExtensionConfig };
 
 interface ManagementParams {
 	action?: string;
@@ -78,8 +81,8 @@ function parsePackageConfig(value: unknown): { packageName?: string; error?: str
 	return parsePackageName(value, "config.package");
 }
 
-function allAgents(d: { builtin: AgentConfig[]; user: AgentConfig[]; project: AgentConfig[] }): AgentConfig[] {
-	return [...d.builtin, ...d.user, ...d.project];
+function allAgents(d: { builtin: AgentConfig[]; package: AgentConfig[]; user: AgentConfig[]; project: AgentConfig[] }): AgentConfig[] {
+	return [...d.builtin, ...d.package, ...d.user, ...d.project];
 }
 
 function availableNames(cwd: string, kind: "agent" | "chain"): string[] {
@@ -114,6 +117,10 @@ function nameExistsInScope(cwd: string, scope: ManagementScope, name: string, ex
 		if (c.source === scope && c.name === name && c.filePath !== excludePath) return true;
 	}
 	return false;
+}
+
+function isMutableSource(source: AgentSource): source is ManagementScope {
+	return source === "user" || source === "project";
 }
 
 function unknownChainAgents(cwd: string, steps: ChainStepConfig[]): string[] {
@@ -169,6 +176,22 @@ function parseStepList(raw: unknown): { steps?: ChainStepConfig[]; error?: strin
 		const s = item as Record<string, unknown>;
 		if (typeof s.agent !== "string" || !s.agent.trim()) return { error: `config.steps[${i}].agent must be a non-empty string.` };
 		const step: ChainStepConfig = { agent: s.agent.trim(), task: typeof s.task === "string" ? s.task : "" };
+		if (hasKey(s, "phase")) {
+			if (typeof s.phase === "string") step.phase = s.phase;
+			else return { error: `config.steps[${i}].phase must be a string.` };
+		}
+		if (hasKey(s, "label")) {
+			if (typeof s.label === "string") step.label = s.label;
+			else return { error: `config.steps[${i}].label must be a string.` };
+		}
+		if (hasKey(s, "as")) {
+			if (typeof s.as === "string") step.as = s.as;
+			else return { error: `config.steps[${i}].as must be a string.` };
+		}
+		if (hasKey(s, "outputSchema")) {
+			if (typeof s.outputSchema === "string") step.outputSchema = s.outputSchema;
+			else return { error: `config.steps[${i}].outputSchema must be a schema file path string for saved chains.` };
+		}
 		if (hasKey(s, "output")) {
 			if (s.output === false) step.output = false;
 			else if (typeof s.output === "string") step.output = s.output;
@@ -253,6 +276,12 @@ function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknown>): st
 		else if (typeof cfg.extensions === "string") target.extensions = parseCsv(cfg.extensions);
 		else return "config.extensions must be a comma-separated string, empty string, or false when provided.";
 	}
+	if (hasKey(cfg, "subagentOnlyExtensions")) {
+		if (cfg.subagentOnlyExtensions === false) target.subagentOnlyExtensions = undefined;
+		else if (cfg.subagentOnlyExtensions === "") target.subagentOnlyExtensions = [];
+		else if (typeof cfg.subagentOnlyExtensions === "string") target.subagentOnlyExtensions = parseCsv(cfg.subagentOnlyExtensions);
+		else return "config.subagentOnlyExtensions must be a comma-separated string, empty string, or false when provided.";
+	}
 	if (hasKey(cfg, "thinking")) {
 		if (cfg.thinking === false || cfg.thinking === "") target.thinking = undefined;
 		else if (typeof cfg.thinking === "string") target.thinking = cfg.thinking.trim() || undefined;
@@ -311,10 +340,10 @@ function resolveTarget<T extends { source: AgentSource; filePath: string }>(
 	cwd: string,
 	scopeHint?: string,
 ): T | AgentToolResult<Details> {
-	const mutable = matches.filter((m) => m.source !== "builtin");
+	const mutable = matches.filter((m): m is T & { source: ManagementScope } => isMutableSource(m.source));
 	if (mutable.length === 0) {
 		if (matches.length > 0) {
-			return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' is builtin and cannot be modified. Create a same-named ${kind} in user or project scope to override it.`, true);
+			return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' is read-only and cannot be modified. Create a same-named ${kind} in user or project scope to override it.`, true);
 		}
 		const available = availableNames(cwd, kind);
 		return result(`${kind === "agent" ? "Agent" : "Chain"} '${name}' not found. Available: ${available.join(", ") || "none"}.`, true);
@@ -339,7 +368,7 @@ function renamePath(
 	cwd: string,
 ): { filePath?: string; error?: string } {
 	if (nameExistsInScope(cwd, scope, newName, currentPath)) return { error: `Name '${newName}' already exists in ${scope} scope.` };
-	const ext = kind === "agent" ? ".md" : ".chain.md";
+	const ext = kind === "agent" ? ".md" : currentPath.endsWith(".chain.json") ? ".chain.json" : ".chain.md";
 	const filePath = path.join(path.dirname(currentPath), `${newName}${ext}`);
 	if (fs.existsSync(filePath) && filePath !== currentPath) {
 		return { error: `File already exists at ${filePath} but is not a valid ${kind} definition. Remove or rename it first.` };
@@ -365,6 +394,7 @@ function formatAgentDetail(agent: AgentConfig): string {
 	if (agent.defaultContext) lines.push(`Default context: ${agent.defaultContext}`);
 	if (agent.source === "builtin") lines.push(`Disabled: ${agent.disabled ? "true" : "false"}`);
 	if (agent.extensions !== undefined) lines.push(`Extensions: ${agent.extensions.length ? agent.extensions.join(", ") : "(none)"}`);
+	if (agent.subagentOnlyExtensions !== undefined) lines.push(`Subagent-only extensions: ${agent.subagentOnlyExtensions.length ? agent.subagentOnlyExtensions.join(", ") : "(none)"}`);
 	if (agent.thinking) lines.push(`Thinking: ${agent.thinking}`);
 	if (agent.output) lines.push(`Output: ${agent.output}`);
 	if (agent.defaultReads?.length) lines.push(`Reads: ${agent.defaultReads.join(", ")}`);
@@ -375,6 +405,41 @@ function formatAgentDetail(agent: AgentConfig): string {
 	return lines.join("\n");
 }
 
+function formatChainStepDetail(step: ChainStepConfig, index: number): string[] {
+	const lines: string[] = [];
+	if (step.expand || step.collect) {
+		const parallel = step.parallel && !Array.isArray(step.parallel) && typeof step.parallel === "object" ? step.parallel as { agent?: unknown; task?: unknown; label?: unknown; outputSchema?: unknown } : undefined;
+		const expand = step.expand && typeof step.expand === "object" ? step.expand as { from?: { output?: unknown; path?: unknown }; item?: unknown; key?: unknown; maxItems?: unknown; onEmpty?: unknown } : undefined;
+		const collect = step.collect && typeof step.collect === "object" ? step.collect as { as?: unknown; outputSchema?: unknown } : undefined;
+		lines.push(`${index + 1}. Dynamic fanout${typeof collect?.as === "string" ? ` -> ${collect.as}` : ""}`);
+		if (expand?.from) lines.push(`   Expand: ${String(expand.from.output ?? "?")}${String(expand.from.path ?? "")}`);
+		if (typeof expand?.item === "string") lines.push(`   Item variable: ${expand.item}`);
+		if (typeof expand?.key === "string") lines.push(`   Key: ${expand.key}`);
+		if (typeof expand?.maxItems === "number") lines.push(`   Max items: ${expand.maxItems}`);
+		if (typeof expand?.onEmpty === "string") lines.push(`   On empty: ${expand.onEmpty}`);
+		if (parallel?.agent) lines.push(`   Agent: ${String(parallel.agent)}`);
+		if (typeof parallel?.label === "string") lines.push(`   Label: ${parallel.label}`);
+		if (typeof parallel?.task === "string" && parallel.task.trim()) lines.push(`   Task: ${parallel.task}`);
+		if (parallel?.outputSchema) lines.push("   Structured output: true");
+		if (collect?.outputSchema) lines.push("   Collect schema: true");
+		if (step.concurrency !== undefined) lines.push(`   Concurrency: ${step.concurrency}`);
+		if (step.failFast !== undefined) lines.push(`   Fail fast: ${step.failFast ? "true" : "false"}`);
+		return lines;
+	}
+	lines.push(`${index + 1}. ${step.agent}`);
+	if (step.task?.trim()) lines.push(`   Task: ${step.task}`);
+	if (step.output === false) lines.push("   Output: false");
+	else if (step.output) lines.push(`   Output: ${step.output}`);
+	if (step.outputMode) lines.push(`   Output mode: ${step.outputMode}`);
+	if (step.reads === false) lines.push("   Reads: false");
+	else if (Array.isArray(step.reads) && step.reads.length > 0) lines.push(`   Reads: ${step.reads.join(", ")}`);
+	if (step.model) lines.push(`   Model: ${step.model}`);
+	if (step.skills === false) lines.push("   Skills: false");
+	else if (Array.isArray(step.skills) && step.skills.length > 0) lines.push(`   Skills: ${step.skills.join(", ")}`);
+	if (step.progress !== undefined) lines.push(`   Progress: ${step.progress ? "true" : "false"}`);
+	return lines;
+}
+
 function formatChainDetail(chain: ChainConfig): string {
 	const lines: string[] = [`Chain: ${chain.name} (${chain.source})`, `Path: ${chain.filePath}`, `Description: ${chain.description}`];
 	if (chain.packageName) {
@@ -383,18 +448,7 @@ function formatChainDetail(chain: ChainConfig): string {
 	}
 	lines.push("", "Steps:");
 	for (let i = 0; i < chain.steps.length; i++) {
-		const s = chain.steps[i]!;
-		lines.push(`${i + 1}. ${s.agent}`);
-		if (s.task.trim()) lines.push(`   Task: ${s.task}`);
-		if (s.output === false) lines.push("   Output: false");
-		else if (s.output) lines.push(`   Output: ${s.output}`);
-		if (s.outputMode) lines.push(`   Output mode: ${s.outputMode}`);
-		if (s.reads === false) lines.push("   Reads: false");
-		else if (Array.isArray(s.reads) && s.reads.length > 0) lines.push(`   Reads: ${s.reads.join(", ")}`);
-		if (s.model) lines.push(`   Model: ${s.model}`);
-		if (s.skills === false) lines.push("   Skills: false");
-		else if (Array.isArray(s.skills) && s.skills.length > 0) lines.push(`   Skills: ${s.skills.join(", ")}`);
-		if (s.progress !== undefined) lines.push(`   Progress: ${s.progress ? "true" : "false"}`);
+		lines.push(...formatChainStepDetail(chain.steps[i]!, i));
 	}
 	return lines.join("\n");
 }
@@ -402,9 +456,16 @@ function formatChainDetail(chain: ChainConfig): string {
 export function handleList(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
 	const scope = normalizeListScope(params.agentScope) ?? "both";
 	const d = discoverAgentsAll(ctx.cwd);
-	const scopedAgents = allAgents(d).filter((a) => scope === "both" || a.source === "builtin" || a.source === scope).sort((a, b) => a.name.localeCompare(b.name));
+	const scopedAgents = allAgents(d).filter((a) => scope === "both" || a.source === "builtin" || a.source === "package" || a.source === scope).sort((a, b) => a.name.localeCompare(b.name));
 	const agents = scopedAgents.filter((a) => !a.disabled);
-	const chains = d.chains.filter((c) => scope === "both" || c.source === scope).sort((a, b) => a.name.localeCompare(b.name));
+	const chains = d.chains.filter((c) => scope === "both" || c.source === "package" || c.source === scope).sort((a, b) => a.name.localeCompare(b.name));
+	const diagnostics = d.chainDiagnostics.filter((entry) => scope === "both" || entry.source === scope);
+	const proactiveSuggestions = buildProactiveSkillSubagentRecommendationLines({
+		agents,
+		chains,
+		config: ctx.config?.proactiveSkillSubagents,
+		discoverAvailableSkills: () => discoverAvailableSkills(ctx.cwd),
+	});
 	const lines = [
 		"Executable agents:",
 		...(agents.length
@@ -413,6 +474,8 @@ export function handleList(params: ManagementParams, ctx: ManagementContext): Ag
 		"",
 		"Chains:",
 		...(chains.length ? chains.map((c) => `- ${c.name} (${c.source}): ${c.description}`) : ["- (none)"]),
+		...(proactiveSuggestions.length ? ["", ...proactiveSuggestions] : []),
+		...(diagnostics.length ? ["", "Chain diagnostics:", ...diagnostics.map((entry) => `- ${entry.filePath}: ${entry.error}`)] : []),
 	];
 	return result(lines.join("\n"));
 }
@@ -608,7 +671,7 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 		if (renamed.error) return result(renamed.error, true);
 		updated.filePath = renamed.filePath!;
 	}
-	fs.writeFileSync(updated.filePath, serializeChain(updated), "utf-8");
+	fs.writeFileSync(updated.filePath, updated.filePath.endsWith(".chain.json") ? serializeJsonChain(updated) : serializeChain(updated), "utf-8");
 	const headline = updated.name === oldName
 		? `Updated chain '${updated.name}' at ${updated.filePath}.`
 		: `Updated chain '${oldName}' to '${updated.name}' at ${updated.filePath}.`;

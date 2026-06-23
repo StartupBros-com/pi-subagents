@@ -16,6 +16,7 @@ export const KNOWN_FIELDS = new Set([
 	"skill",
 	"skills",
 	"extensions",
+	"subagentOnlyExtensions",
 	"output",
 	"defaultReads",
 	"defaultProgress",
@@ -59,6 +60,10 @@ export function serializeAgent(config: AgentConfig): string {
 		const extensionsValue = joinComma(config.extensions);
 		lines.push(`extensions: ${extensionsValue ?? ""}`);
 	}
+	if (config.subagentOnlyExtensions !== undefined) {
+		const subagentOnlyExtensionsValue = joinComma(config.subagentOnlyExtensions);
+		lines.push(`subagentOnlyExtensions: ${subagentOnlyExtensionsValue ?? ""}`);
+	}
 
 	if (config.output) lines.push(`output: ${config.output}`);
 
@@ -67,8 +72,9 @@ export function serializeAgent(config: AgentConfig): string {
 
 	if (config.defaultProgress) lines.push("defaultProgress: true");
 	if (config.interactive) lines.push("interactive: true");
-	if (Number.isInteger(config.maxSubagentDepth) && config.maxSubagentDepth >= 0) {
-		lines.push(`maxSubagentDepth: ${config.maxSubagentDepth}`);
+	const maxSubagentDepth = config.maxSubagentDepth;
+	if (typeof maxSubagentDepth === "number" && Number.isInteger(maxSubagentDepth) && maxSubagentDepth >= 0) {
+		lines.push(`maxSubagentDepth: ${maxSubagentDepth}`);
 	}
 	if (config.completionGuard === false) lines.push("completionGuard: false");
 
