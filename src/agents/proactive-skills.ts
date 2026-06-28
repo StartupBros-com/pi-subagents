@@ -24,7 +24,7 @@ export interface ProactiveSkillSubagentRecommendation {
 	reason: string;
 }
 
-export interface AvailableSkill {
+interface AvailableSkill {
 	name: string;
 	description?: string;
 }
