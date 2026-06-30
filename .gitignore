@@ -4,7 +4,5 @@ AGENTS.md
 node_modules/
 .fallow/
 
-package-lock.json
-
 # Claude Code parallel worktrees
 .claude/worktrees/
